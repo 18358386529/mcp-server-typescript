@@ -1,8 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
-import { Request, Response, NextFunction } from "express";
-import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 
 const MCP_API_TOKEN = process.env.MCP_API_TOKEN;
@@ -11,12 +8,9 @@ export function createServer(): McpServer {
   const server = new McpServer({
     name: "my-mcp-server",
     version: "1.0.0",
-    capabilities: { logging: {} },
   });
 
-  // ============================================================
   // 工具1：存储记忆
-  // ============================================================
   server.registerTool(
     "add_memory",
     {
@@ -42,9 +36,7 @@ export function createServer(): McpServer {
     }
   );
 
-  // ============================================================
   // 工具2：搜索记忆
-  // ============================================================
   server.registerTool(
     "search_memories",
     {
