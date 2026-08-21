@@ -15,19 +15,52 @@ export function createServer(): McpServer {
     { capabilities: { logging: {} } },
   );
 
-  // Add tools here. `description` is surfaced to LLMs; Zod schemas
-  // in `inputSchema` are converted to JSON Schema automatically.
-  server.registerTool(
-    "hello",
+// 工具1：存储记忆
+  server.registerTool({
+    "add_memory",
     {
-      description: "Say hello to someone",
-      inputSchema: { name: z.string() },
+      description: "存储一条记忆，AI会记住这段信息用于未来对话",
+      inputSchema: { content: z.string() },
+      async ({ content }) => {
+        const res = await fetch("https://memos.memtensor.cn/api/openmem/v1/memories", {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${process.env.MEMOS_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            user_id: process.env.MEMOS_USER_ID,
+            content: content,
+          }),
+        });
+        const data = await res.json();
+        return {
+          content: [{ type: "text", text: `✅ 已存储记忆：${content}` }],
+        };
+      },
     },
-    async ({ name }) => ({
-      content: [{ type: "text", text: `Hello, ${name}!` }],
-    }),
-  );
+  });
 
+  // 工具2：搜索记忆
+  server.registerTool({
+    "search_memories",
+    {
+      description: "搜索已存储的记忆",
+      inputSchema: { query: z.string() },
+      async ({ query }) => {
+        const res = await fetch(
+          `https://memos.memtensor.cn/api/openmem/v1/memories?user_id=${process.env.MEMOS_USER_ID}&query=${encodeURIComponent(query)}`,
+          {
+            headers: { "Authorization": `Bearer ${process.env.MEMOS_API_KEY}` },
+          }
+        );
+        const data = await res.json();
+        return {
+          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        };
+      },
+    },
+  });
   return server;
 }
 
