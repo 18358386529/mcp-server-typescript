@@ -1,66 +1,64 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
+import { z } from "zod";
 import { Request, Response, NextFunction } from "express";
 import { timingSafeEqual } from "node:crypto";
-import { z } from "zod/v4";
 
 const MCP_API_TOKEN = process.env.MCP_API_TOKEN;
 
-// Called per request — stateless mode means no session persistence,
-// which is required for horizontally scaled deployments.
 export function createServer(): McpServer {
-  const server = new McpServer(
-    { name: "my-mcp-server", version: "1.0.0" },
-    { capabilities: { logging: {} } },
-  );
+  const server = new McpServer({
+    name: "my-mcp-server",
+    version: "1.0.0",
+  });
 
-// 工具1：存储记忆
-  server.registerTool({
+  // 工具1：存储记忆
+  server.registerTool(
     "add_memory",
     {
       description: "存储一条记忆，AI会记住这段信息用于未来对话",
       inputSchema: { content: z.string() },
-      async ({ content }) => {
-        const res = await fetch("https://memos.memtensor.cn/api/openmem/v1/memories", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${process.env.MEMOS_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            user_id: process.env.MEMOS_USER_ID,
-            content: content,
-          }),
-        });
-        const data = await res.json();
-        return {
-          content: [{ type: "text", text: `✅ 已存储记忆：${content}` }],
-        };
-      },
     },
-  });
+    async ({ content }) => {
+      const res = await fetch("https://memos.memtensor.cn/api/openmem/v1/memories", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.MEMOS_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          user_id: process.env.MEMOS_USER_ID,
+          content,
+        }),
+      });
+      const data = await res.json();
+      return {
+        content: [{ type: "text", text: JSON.stringify(data) }],
+      };
+    }
+  );
 
   // 工具2：搜索记忆
-  server.registerTool({
+  server.registerTool(
     "search_memories",
     {
       description: "搜索已存储的记忆",
       inputSchema: { query: z.string() },
-      async ({ query }) => {
-        const res = await fetch(
-          `https://memos.memtensor.cn/api/openmem/v1/memories?user_id=${process.env.MEMOS_USER_ID}&query=${encodeURIComponent(query)}`,
-          {
-            headers: { "Authorization": `Bearer ${process.env.MEMOS_API_KEY}` },
-          }
-        );
-        const data = await res.json();
-        return {
-          content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
-        };
-      },
     },
-  });
+    async ({ query }) => {
+      const res = await fetch(
+        `https://memos.memtensor.cn/api/openmem/v1/memories?user_id=${process.env.MEMOS_USER_ID}&query=${encodeURIComponent(query)}`,
+        {
+          headers: { "Authorization": `Bearer ${process.env.MEMOS_API_KEY}` },
+        }
+      );
+      const data = await res.json();
+      return {
+        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+      };
+    }
+  );
+
   return server;
 }
 
@@ -68,79 +66,19 @@ const RENDER_EXTERNAL_HOSTNAME = process.env.RENDER_EXTERNAL_HOSTNAME;
 
 export const app = createMcpExpressApp({
   host: "0.0.0.0",
-  allowedHosts: RENDER_EXTERNAL_HOSTNAME ? [RENDER_EXTERNAL_HOSTNAME] : undefined,
+  allowedHosts: RENDER_EXTERNAL_HOSTNAME ? [RENDER_EXTERNAL_HOSTNAME] : [],
 });
 
-// Simple bearer token auth. For multi-user or production setups,
-// consider upgrading to the MCP SDK's built-in OAuth 2.1 support.
-// When no token is set (local dev), auth is disabled entirely.
+// 简单 Bearer Token 鉴权
 app.use((req: Request, res: Response, next: NextFunction) => {
   if (req.path === "/health" || !MCP_API_TOKEN) {
-    next();
-    return;
+    return next();
   }
-
   const auth = req.headers.authorization ?? "";
   const expected = `Bearer ${MCP_API_TOKEN}`;
-  // timingSafeEqual requires equal-length buffers, so check length first
-  if (
-    auth.length === expected.length &&
-    timingSafeEqual(Buffer.from(auth), Buffer.from(expected))
-  ) {
-    next();
+  if (!auth || !timingSafeEqual(Buffer.from(auth), Buffer.from(expected))) {
+    res.status(401).send("Unauthorized");
     return;
   }
-
-  res.status(401).json({
-    jsonrpc: "2.0",
-    error: { code: -32001, message: "Unauthorized" },
-    id: null,
-  });
-});
-
-app.get("/health", (_req: Request, res: Response) => {
-  res.json({ status: "ok" });
-});
-
-app.post("/mcp", async (req: Request, res: Response) => {
-  const server = createServer();
-  try {
-    // sessionIdGenerator: undefined → stateless (no session tracking)
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-    });
-    await server.connect(transport);
-    await transport.handleRequest(req, res, req.body);
-    res.on("close", () => {
-      transport.close();
-      server.close();
-    });
-  } catch (error) {
-    console.error("Error handling MCP request:", error);
-    if (!res.headersSent) {
-      res.status(500).json({
-        jsonrpc: "2.0",
-        error: { code: -32603, message: "Internal server error" },
-        id: null,
-      });
-    }
-  }
-});
-
-// GET and DELETE on /mcp are part of the Streamable HTTP spec but
-// only apply to stateful servers. Reject explicitly for clarity.
-app.get("/mcp", (_req: Request, res: Response) => {
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: { code: -32000, message: "Method not allowed." },
-    id: null,
-  });
-});
-
-app.delete("/mcp", (_req: Request, res: Response) => {
-  res.status(405).json({
-    jsonrpc: "2.0",
-    error: { code: -32000, message: "Method not allowed." },
-    id: null,
-  });
+  next();
 });
